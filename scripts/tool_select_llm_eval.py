@@ -44,11 +44,13 @@ the FALLBACK top-1, and the record's `top1_source` says which mode won
 brief asks for, generalized to any tools-mode failure rather than a single
 model-name allowlist that would need maintaining.
 
-DETERMINISM, loosely. `temperature=0` and `seed=0` on every call — "loosely"
-because `seed` is an OpenAI-specific best-effort hint the gateway may pass
-through, drop, or ignore per-provider; nothing here depends on it being
-honored, and BM25's own tie-break is the only fully reproducible half of
-this comparison.
+DETERMINISM, loosely. `temperature=0` and `seed=0` on every call except
+`anthropic/` models — "loosely" because `seed` is an OpenAI-specific
+best-effort hint the gateway may pass through, drop, or ignore per-provider;
+nothing here depends on it being honored, and BM25's own tie-break is the
+only fully reproducible half of this comparison. Anthropic models from Claude
+Opus 4.7 on (Haiku 5.5 included) reject any non-default `temperature`,
+`top_p` or `top_k` with a 400, so `anthropic/` calls send neither.
 
 CACHE. Resumable, keyed by `sha256(f"{model}\\x1f{group}\\x1f{prompt}")`,
 one JSON file per key under `scripts/data/.llm_eval_cache/` (gitignored). A
@@ -86,7 +88,7 @@ behavior locally.
 USAGE
     # env: CODECALC_EVAL_BASE_URL, CODECALC_EVAL_API_KEY must both be set
     python scripts/tool_select_llm_eval.py
-    python scripts/tool_select_llm_eval.py --models anthropic/claude-haiku-4-5-20251001,openai/gpt-4o-mini
+    python scripts/tool_select_llm_eval.py --models anthropic/claude-haiku-5-5,openai/gpt-4o-mini
     python scripts/tool_select_llm_eval.py --groups full,dev,core --json report.json
     python scripts/tool_select_llm_eval.py --baseline scripts/data/tool_select_llm_baseline.json --strict
 """
@@ -126,7 +128,18 @@ ENV_API_KEY = "CODECALC_EVAL_API_KEY"
 #: — a private tailnet address in a tracked file fails that gate on sight, so
 #: `CODECALC_EVAL_BASE_URL` has NO default value in this file, only in the
 #: environment of whoever runs it).
-DEFAULT_MODELS = ("anthropic/claude-haiku-4-5-20251001", "openai/gpt-4o-mini")
+DEFAULT_MODELS = ("anthropic/claude-haiku-5-5", "openai/gpt-4o-mini")
+
+
+def _sampling_params(model: str) -> dict:
+    """`temperature`/`seed` for the call, empty for `anthropic/` models.
+
+    Current Anthropic models return a 400 on any non-default `temperature`
+    (platform docs, build-with-claude/thinking, 2026-10-08), so they run at
+    the provider default instead."""
+    if model.startswith("anthropic/"):
+        return {}
+    return {"temperature": 0, "seed": 0}
 
 DEFAULT_CACHE_DIR = REPO / "scripts" / "data" / ".llm_eval_cache"
 DEFAULT_LLM_BASELINE = REPO / "scripts" / "data" / "tool_select_llm_baseline.json"
@@ -314,8 +327,7 @@ def call_tool_mode(base_url: str, api_key: str, model: str, tools_payload: list[
         ],
         "tools": tools_payload,
         "tool_choice": "required",
-        "temperature": 0,
-        "seed": 0,
+        **_sampling_params(model),
     }
     try:
         resp = _post_json(base_url, api_key, payload, timeout, max_retries)
@@ -377,8 +389,7 @@ def call_list_mode(base_url: str, api_key: str, model: str, catalog_text: str,
             {"role": "system", "content": LIST_MODE_SYSTEM_TEMPLATE.format(catalog=catalog_text)},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0,
-        "seed": 0,
+        **_sampling_params(model),
     }
     try:
         resp = _post_json(base_url, api_key, payload, timeout, max_retries)
